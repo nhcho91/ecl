@@ -45,28 +45,57 @@
 
 #define ecl_absolute_time hrt_absolute_time
 #define ecl_elapsed_time hrt_elapsed_time
+using ecl_abstime = hrt_abstime;
+
 #define ECL_INFO PX4_INFO
 #define ECL_WARN PX4_WARN
 #define ECL_ERR	 PX4_ERR
 
+#if defined(__PX4_POSIX)
+#define ECL_INFO_TIMESTAMPED(X) PX4_INFO("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+#define ECL_WARN_TIMESTAMPED(X) PX4_WARN("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+#define ECL_ERR_TIMESTAMPED(X) PX4_ERR("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+#else
+#define ECL_INFO_TIMESTAMPED PX4_INFO
+#define ECL_WARN_TIMESTAMPED PX4_WARN
+#define ECL_ERR_TIMESTAMPED PX4_ERR
+#endif
+
+#elif defined(__PAPARAZZI)
+
+#include "std.h"
+
+#define ecl_absolute_time() (0)
+#define ecl_elapsed_time(t) (*t * 0UL) // TODO: add simple time functions
+
+using ecl_abstime = uint64_t;
+
+#define ECL_INFO(...)
+#define ECL_WARN(...)
+#define ECL_ERR(...)
+#define ECL_INFO_TIMESTAMPED PX4_INFO
+#define ECL_WARN_TIMESTAMPED PX4_WARN
+#define ECL_ERR_TIMESTAMPED PX4_ERR
+
 #else
 
-#define ECL_INFO printf
-#define ECL_WARN printf
-#define ECL_ERR printf
+#include <cstdio>
+#include <cstdint>
 
-#endif
+#define ecl_absolute_time() (0)
+#define ecl_elapsed_time(t) (*t * 0UL) // TODO: add simple time functions
 
-#ifndef __PX4_QURT
-#if defined(__cplusplus) && !defined(__PX4_NUTTX)
-#include <cmath>
-#define ISFINITE(x) std::isfinite(x)
-#else
-#define ISFINITE(x) isfinite(x)
-#endif
-#endif
+using ecl_abstime = uint64_t;
 
-#if defined(__PX4_QURT)
-// Missing math.h defines
+#define ECL_INFO(X, ...) printf(X "\n", ##__VA_ARGS__)
+#define ECL_WARN(X, ...) fprintf(stderr, X "\n", ##__VA_ARGS__)
+#define ECL_ERR(X, ...) fprintf(stderr, X "\n", ##__VA_ARGS__)
+
+#define ECL_INFO_TIMESTAMPED(X) ECL_INFO("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+#define ECL_WARN_TIMESTAMPED(X) ECL_WARN("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+#define ECL_ERR_TIMESTAMPED(X) ECL_ERR("%llu: " X, (unsigned long long)_imu_sample_delayed.time_us)
+
+#endif /* PX4_POSIX || PX4_NUTTX */
+
+#include <math.h>
 #define ISFINITE(x) __builtin_isfinite(x)
-#endif

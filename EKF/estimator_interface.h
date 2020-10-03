@@ -39,11 +39,20 @@
  *
  */
 
-#include <matrix/matrix/math.hpp>
-#include "RingBuffer.h"
-#include "geo.h"
+#pragma once
+
+#include <ecl.h>
 #include "common.h"
-#include "mathlib.h"
+#include "RingBuffer.h"
+#include <AlphaFilter/AlphaFilter.hpp>
+#include "imu_down_sampler.hpp"
+#include "EKFGSF_yaw.h"
+#include "sensor_range_finder.hpp"
+#include "utils.hpp"
+
+#include <geo/geo.h>
+#include <matrix/math.hpp>
+#include <mathlib/mathlib.h>
 
 using namespace estimator;
 
@@ -51,84 +60,73 @@ class EstimatorInterface
 {
 
 public:
-	EstimatorInterface() = default;
+	EstimatorInterface():_imu_down_sampler(FILTER_UPDATE_PERIOD_S){};
 	virtual ~EstimatorInterface() = default;
 
 	virtual bool init(uint64_t timestamp) = 0;
+	virtual void reset() = 0;
+
 	virtual bool update() = 0;
 
-	// gets the innovations of velocity and position measurements
-	// 0-2 vel, 3-5 pos
-	virtual void get_vel_pos_innov(float vel_pos_innov[6]) = 0;
+	virtual void getGpsVelPosInnov(float hvel[2], float &vvel, float hpos[2], float &vpos) const = 0;
+	virtual void getGpsVelPosInnovVar(float hvel[2], float &vvel, float hpos[2], float &vpos) const = 0;
+	virtual void getGpsVelPosInnovRatio(float &hvel, float &vvel, float &hpos, float &vpos) const = 0;
 
-	// gets the innovations for of the NE auxiliary velocity measurement
-	virtual void get_aux_vel_innov(float aux_vel_innov[2]) = 0;
+	virtual void getEvVelPosInnov(float hvel[2], float &vvel, float hpos[2], float &vpos) const = 0;
+	virtual void getEvVelPosInnovVar(float hvel[2], float &vvel, float hpos[2], float &vpos) const = 0;
+	virtual void getEvVelPosInnovRatio(float &hvel, float &vvel, float &hpos, float &vpos) const = 0;
 
-	// gets the innovations of the earth magnetic field measurements
-	virtual void get_mag_innov(float mag_innov[3]) = 0;
+	virtual void getBaroHgtInnov(float &baro_hgt_innov) const = 0;
+	virtual void getBaroHgtInnovVar(float &baro_hgt_innov_var) const = 0;
+	virtual void getBaroHgtInnovRatio(float &baro_hgt_innov_ratio) const = 0;
 
-	// gets the innovation of airspeed measurement
-	virtual void get_airspeed_innov(float *airspeed_innov) = 0;
+	virtual void getRngHgtInnov(float &rng_hgt_innov) const = 0;
+	virtual void getRngHgtInnovVar(float &rng_hgt_innov_var) const = 0;
+	virtual void getRngHgtInnovRatio(float &rng_hgt_innov_ratio) const = 0;
 
-	// gets the innovation of the synthetic sideslip measurement
-	virtual void get_beta_innov(float *beta_innov) = 0;
+	virtual void getAuxVelInnov(float aux_vel_innov[2]) const = 0;
+	virtual void getAuxVelInnovVar(float aux_vel_innov[2]) const = 0;
+	virtual void getAuxVelInnovRatio(float &aux_vel_innov_ratio) const = 0;
 
-	// gets the innovations of the heading measurement
-	virtual void get_heading_innov(float *heading_innov) = 0;
+	virtual void getFlowInnov(float flow_innov[2]) const = 0;
+	virtual void getFlowInnovVar(float flow_innov_var[2]) const = 0;
+	virtual void getFlowInnovRatio(float &flow_innov_ratio) const = 0;
 
-	// gets the innovation variances of velocity and position measurements
-	// 0-2 vel, 3-5 pos
-	virtual void get_vel_pos_innov_var(float vel_pos_innov_var[6]) = 0;
+	virtual void getHeadingInnov(float &heading_innov) const = 0;
+	virtual void getHeadingInnovVar(float &heading_innov_var) const = 0;
+	virtual void getHeadingInnovRatio(float &heading_innov_ratio) const = 0;
 
-	// gets the innovation variances of the earth magnetic field measurements
-	virtual void get_mag_innov_var(float mag_innov_var[3]) = 0;
+	virtual void getMagInnov(float mag_innov[3]) const = 0;
+	virtual void getMagInnovVar(float mag_innov_var[3]) const = 0;
+	virtual void getMagInnovRatio(float &mag_innov_ratio) const = 0;
 
-	// gets the innovation variance of the airspeed measurement
-	virtual void get_airspeed_innov_var(float *get_airspeed_innov_var) = 0;
+	virtual void getDragInnov(float drag_innov[2]) const = 0;
+	virtual void getDragInnovVar(float drag_innov_var[2]) const = 0;
+	virtual void getDragInnovRatio(float drag_innov_ratio[2]) const = 0;
 
-	// gets the innovation variance of the synthetic sideslip measurement
-	virtual void get_beta_innov_var(float *get_beta_innov_var) = 0;
+	virtual void getAirspeedInnov(float &airspeed_innov) const = 0;
+	virtual void getAirspeedInnovVar(float &get_airspeed_innov_var) const = 0;
+	virtual void getAirspeedInnovRatio(float &airspeed_innov_ratio) const = 0;
 
-	// gets the innovation variance of the heading measurement
-	virtual void get_heading_innov_var(float *heading_innov_var) = 0;
+	virtual void getBetaInnov(float &beta_innov) const = 0;
+	virtual void getBetaInnovVar(float &get_beta_innov_var) const = 0;
+	virtual void getBetaInnovRatio(float &beta_innov_ratio) const = 0;
 
-	virtual void get_state_delayed(float *state) = 0;
+	virtual void getHaglInnov(float &hagl_innov) const = 0;
+	virtual void getHaglInnovVar(float &hagl_innov_var) const = 0;
+	virtual void getHaglInnovRatio(float &hagl_innov_ratio) const = 0;
 
-	virtual void get_wind_velocity(float *wind) = 0;
+	virtual matrix::Vector<float, 24> getStateAtFusionHorizonAsVector() const = 0;
 
-	virtual void get_wind_velocity_var(float *wind_var) = 0;
+	virtual Vector2f getWindVelocity() const = 0;
+
+	virtual Vector2f getWindVelocityVariance() const = 0;
 
 	virtual void get_true_airspeed(float *tas) = 0;
 
-	virtual void get_covariances(float *covariances) = 0;
-
-	// gets the variances for the NED velocity states
-	virtual void get_vel_var(Vector3f &vel_var) = 0;
-
-	// gets the variances for the NED position states
-	virtual void get_pos_var(Vector3f &pos_var) = 0;
-
-	// gets the innovation variance of the flow measurement
-	virtual void get_flow_innov_var(float flow_innov_var[2]) = 0;
-
-	// gets the innovation of the flow measurement
-	virtual void get_flow_innov(float flow_innov[2]) = 0;
-
-	// gets the innovation variance of the drag specific force measurement
-	virtual void get_drag_innov_var(float drag_innov_var[2]) = 0;
-
-	// gets the innovation of the drag specific force measurement
-	virtual void get_drag_innov(float drag_innov[2]) = 0;
-
-	// gets the innovation variance of the HAGL measurement
-	virtual void get_hagl_innov_var(float *flow_innov_var) = 0;
-
-	// gets the innovation of the HAGL measurement
-	virtual void get_hagl_innov(float *flow_innov_var) = 0;
-
 	// return an array containing the output predictor angular, velocity and position tracking
 	// error magnitudes (rad), (m/s), (m)
-	virtual void get_output_tracking_error(float error[3]) = 0;
+	virtual Vector3f getOutputTrackingError() const = 0;
 
 	/*
 	Returns  following IMU vibration metrics in the following array locations
@@ -136,60 +134,57 @@ public:
 	1 : Gyro high frequency vibe = filtered length of (delta_angle - prev_delta_angle)
 	2 : Accel high frequency vibe = filtered length of (delta_velocity - prev_delta_velocity)
 	*/
-	virtual void get_imu_vibe_metrics(float vibe[3]) = 0;
+	virtual Vector3f getImuVibrationMetrics() const = 0;
+
+	/*
+	First argument returns GPS drift  metrics in the following array locations
+	0 : Horizontal position drift rate (m/s)
+	1 : Vertical position drift rate (m/s)
+	2 : Filtered horizontal velocity (m/s)
+	Second argument returns true when IMU movement is blocking the drift calculation
+	Function returns true if the metrics have been updated and not returned previously by this function
+	*/
+	virtual bool get_gps_drift_metrics(float drift[3], bool *blocked) = 0;
 
 	// get the ekf WGS-84 origin position and height and the system time it was last set
 	// return true if the origin is valid
 	virtual bool get_ekf_origin(uint64_t *origin_time, map_projection_reference_s *origin_pos, float *origin_alt) = 0;
 
 	// get the 1-sigma horizontal and vertical position uncertainty of the ekf WGS-84 position
-	virtual void get_ekf_gpos_accuracy(float *ekf_eph, float *ekf_epv, bool *dead_reckoning) = 0;
+	virtual void get_ekf_gpos_accuracy(float *ekf_eph, float *ekf_epv) = 0;
 
 	// get the 1-sigma horizontal and vertical position uncertainty of the ekf local position
-	virtual void get_ekf_lpos_accuracy(float *ekf_eph, float *ekf_epv, bool *dead_reckoning) = 0;
+	virtual void get_ekf_lpos_accuracy(float *ekf_eph, float *ekf_epv) = 0;
 
 	// get the 1-sigma horizontal and vertical velocity uncertainty
-	virtual void get_ekf_vel_accuracy(float *ekf_evh, float *ekf_evv, bool *dead_reckoning) = 0;
+	virtual void get_ekf_vel_accuracy(float *ekf_evh, float *ekf_evv) = 0;
 
-	/*
-	Returns the following vehicle control limits required by the estimator.
-	vxy_max : Maximum ground relative horizontal speed (metres/sec). NaN when no limiting required.
-	limit_hagl : Boolean true when height above ground needs to be controlled to remain between optical flow focus and rang efinder max range limits.
-	*/
-	virtual void get_ekf_ctrl_limits(float *vxy_max, bool *limit_hagl) = 0;
+	// get the vehicle control limits required by the estimator to keep within sensor limitations
+	virtual void get_ekf_ctrl_limits(float *vxy_max, float *vz_max, float *hagl_min, float *hagl_max) = 0;
 
 	// ask estimator for sensor data collection decision and do any preprocessing if required, returns true if not defined
-	virtual bool collect_gps(uint64_t time_usec, struct gps_message *gps) { return true; }
+	virtual bool collect_gps(const gps_message &gps) = 0;
 
-	// accumulate and downsample IMU data to the EKF prediction rate
-	virtual bool collect_imu(imuSample &imu) { return true; }
+	void setIMUData(const imuSample &imu_sample);
 
-	// set delta angle imu data
-	void setIMUData(uint64_t time_usec, uint64_t delta_ang_dt, uint64_t delta_vel_dt, float (&delta_ang)[3], float (&delta_vel)[3]);
 
-	// set magnetometer data
-	void setMagData(uint64_t time_usec, float (&data)[3]);
+	void setMagData(const magSample &mag_sample);
 
-	// set gps data
-	void setGpsData(uint64_t time_usec, struct gps_message *gps);
+	void setGpsData(const gps_message &gps);
 
-	// set baro data
-	void setBaroData(uint64_t time_usec, float data);
+	void setBaroData(const baroSample &baro_sample);
 
-	// set airspeed data
-	void setAirspeedData(uint64_t time_usec, float true_airspeed, float eas2tas);
+	void setAirspeedData(const airspeedSample &airspeed_sample);
 
-	// set range data
-	void setRangeData(uint64_t time_usec, float data);
+	void setRangeData(const rangeSample& range_sample);
 
-	// set optical flow data
-	void setOpticalFlowData(uint64_t time_usec, flow_message *flow);
+	// if optical flow sensor gyro delta angles are not available, set gyro_xyz vector fields to NaN and the EKF will use its internal delta angle data instead
+	void setOpticalFlowData(const flowSample& flow);
 
 	// set external vision position and attitude data
-	void setExtVisionData(uint64_t time_usec, ext_vision_message *evdata);
+	void setExtVisionData(const extVisionSample& evdata);
 
-	// set auxiliary velocity data
-	void setAuxVelData(uint64_t time_usec, float (&data)[2], float (&variance)[2]);
+	void setAuxVelData(const auxVelSample& auxvel_sample);
 
 	// return a address to the parameters struct
 	// in order to give access to the application
@@ -205,8 +200,14 @@ public:
 	*/
 	virtual bool reset_imu_bias() = 0;
 
+	// return true if the attitude is usable
+	bool attitude_valid() { return ISFINITE(_output_new.quat_nominal(0)) && _control_status.flags.tilt_align; }
+
 	// get vehicle landed status data
 	bool get_in_air_status() {return _control_status.flags.in_air;}
+
+	// get wind estimation status
+	bool get_wind_status() { return _control_status.flags.wind; }
 
 	// set vehicle is fixed wing status
 	void set_is_fixed_wing(bool is_fixed_wing) {_control_status.flags.fixed_wing = is_fixed_wing;}
@@ -223,85 +224,116 @@ public:
 		_time_last_gnd_effect_on = _time_last_imu;
 	}
 
-	// set flag if only only mag states should be updated by the magnetometer
-	void set_update_mag_states_only_flag(bool update_mag_states_only) {_control_status.flags.update_mag_states_only = update_mag_states_only;}
-
 	// set air density used by the multi-rotor specific drag force fusion
 	void set_air_density(float air_density) {_air_density = air_density;}
+
+	// set sensor limitations reported by the rangefinder
+	void set_rangefinder_limits(float min_distance, float max_distance)
+	{
+		_range_sensor.setLimits(min_distance, max_distance);
+	}
+
+	// set sensor limitations reported by the optical flow sensor
+	void set_optical_flow_limits(float max_flow_rate, float min_distance, float max_distance)
+	{
+		_flow_max_rate = max_flow_rate;
+		_flow_min_distance = min_distance;
+		_flow_max_distance = max_distance;
+	}
 
 	// return true if the global position estimate is valid
 	virtual bool global_position_is_valid() = 0;
 
-	// return true if the EKF is dead reckoning the position using inertial data only
-	virtual bool inertial_dead_reckoning() = 0;
+	// the flags considered are opt_flow, gps, ev_vel and ev_pos
+	bool isOnlyActiveSourceOfHorizontalAiding(bool aiding_flag) const;
 
-	// return true if the terrain estimate is valid
-	virtual bool get_terrain_valid() = 0;
+	/*
+	 * Check if there are any other active source of horizontal aiding
+	 * Warning: does not tell if the selected source is
+	 * active, use isOnlyActiveSourceOfHorizontalAiding() for this
+	 *
+	 * The flags considered are opt_flow, gps, ev_vel and ev_pos
+	 *
+	 * @param aiding_flag a flag in _control_status.flags
+	 * @return true if an other source than aiding_flag is active
+	 */
+	bool isOtherSourceOfHorizontalAidingThan(bool aiding_flag) const;
+
+	// Return true if at least one source of horizontal aiding is active
+	// the flags considered are opt_flow, gps, ev_vel and ev_pos
+	bool isHorizontalAidingActive() const;
+
+	int getNumberOfActiveHorizontalAidingSources() const;
+
+	// return true if the EKF is dead reckoning the position using inertial data only
+	bool inertial_dead_reckoning() {return _is_dead_reckoning;}
+
+	virtual bool isTerrainEstimateValid() const = 0;
+	//[[deprecated("Replaced by isTerrainEstimateValid")]]
+	bool get_terrain_valid() { return isTerrainEstimateValid(); }
+
+	virtual uint8_t getTerrainEstimateSensorBitfield() const = 0;
 
 	// get the estimated terrain vertical position relative to the NED origin
-	virtual void get_terrain_vert_pos(float *ret) = 0;
+	virtual float getTerrainVertPos() const = 0;
 
 	// return true if the local position estimate is valid
 	bool local_position_is_valid();
 
-	void copy_quaternion(float *quat)
-	{
-		for (unsigned i = 0; i < 4; i++) {
-			quat[i] = _output_new.quat_nominal(i);
-		}
-	}
+	const matrix::Quatf getQuaternion() const { return _output_new.quat_nominal; }
 
 	// return the quaternion defining the rotation from the EKF to the External Vision reference frame
-	virtual void get_ekf2ev_quaternion(float *quat) = 0;
+	virtual matrix::Quatf getVisionAlignmentQuaternion() const = 0;
 
 	// get the velocity of the body frame origin in local NED earth frame
-	void get_velocity(float *vel)
+	Vector3f getVelocity() const
 	{
-		Vector3f vel_earth = _output_new.vel - _vel_imu_rel_body_ned;
-		for (unsigned i = 0; i < 3; i++) {
-			vel[i] = vel_earth(i);
-		}
+		const Vector3f vel_earth = _output_new.vel - _vel_imu_rel_body_ned;
+		return vel_earth;
 	}
 
-	// get the NED velocity derivative in earth frame
-	void get_vel_deriv_ned(float *vel_deriv)
+	virtual Vector3f getVelocityVariance() const = 0;
+
+	// get the velocity derivative in earth frame
+	Vector3f getVelocityDerivative() const
 	{
-		for (unsigned i = 0; i < 3; i++) {
-			vel_deriv[i] = _vel_deriv_ned(i);
-		}
+		return _vel_deriv;
 	}
 
 	// get the derivative of the vertical position of the body frame origin in local NED earth frame
-	void get_pos_d_deriv(float *pos_d_deriv)
+	float getVerticalPositionDerivative() const
 	{
-		float var = _output_vert_new.vel_d - _vel_imu_rel_body_ned(2);
-		*pos_d_deriv = var;
+		return _output_vert_new.vert_vel - _vel_imu_rel_body_ned(2);
 	}
 
-	// get the position of the body frame origin in local NED earth frame
-	void get_position(float *pos)
+	// get the position of the body frame origin in local earth frame
+	Vector3f getPosition() const
 	{
 		// rotate the position of the IMU relative to the boy origin into earth frame
-		Vector3f pos_offset_earth = _R_to_earth_now * _params.imu_pos_body;
-
+		const Vector3f pos_offset_earth = _R_to_earth_now * _params.imu_pos_body;
 		// subtract from the EKF position (which is at the IMU) to get position at the body origin
-		for (unsigned i = 0; i < 3; i++) {
-			pos[i] = _output_new.pos(i) - pos_offset_earth(i);
+		return _output_new.pos - pos_offset_earth;
+	}
+
+	virtual Vector3f getPositionVariance() const = 0;
+
+	// Get the value of magnetic declination in degrees to be saved for use at the next startup
+	// Returns true when the declination can be saved
+	// At the next startup, set param.mag_declination_deg to the value saved
+	bool get_mag_decl_deg(float *val)
+	{
+		*val = 0.0f;
+		if (_NED_origin_initialised && (_params.mag_declination_source & MASK_SAVE_GEO_DECL)) {
+			*val = math::degrees(_mag_declination_gps);
+			return true;
+
+		} else {
+			return false;
 		}
 	}
-	void copy_timestamp(uint64_t *time_us)
-	{
-		*time_us = _time_last_imu;
-	}
 
-	// Copy the magnetic declination that we wish to save to the EKF2_MAG_DECL parameter for the next startup
-	void copy_mag_decl_deg(float *val)
-	{
-		*val = _mag_declination_to_save_deg;
-	}
-
-	virtual void get_accel_bias(float bias[3]) = 0;
-	virtual void get_gyro_bias(float bias[3]) = 0;
+	virtual Vector3f getAccelBias() const = 0;
+	virtual Vector3f getGyroBias() const = 0;
 
 	// get EKF mode status
 	void get_control_mode(uint32_t *val)
@@ -314,6 +346,8 @@ public:
 	{
 		*val = _fault_status.value;
 	}
+
+	bool isVehicleAtRest() const { return _control_status.flags.vehicle_at_rest; }
 
 	// get GPS check status
 	virtual void get_gps_check_status(uint16_t *val) = 0;
@@ -337,17 +371,14 @@ public:
 	// status - a bitmask integer containing the pass/fail status for each EKF measurement innovation consistency check
 	// Innovation Test Ratios - these are the ratio of the innovation to the acceptance threshold.
 	// A value > 1 indicates that the sensor measurement has exceeded the maximum acceptable level and has been rejected by the EKF
-	// Where a measurement type is a vector quantity, eg magnetoemter, GPS position, etc, the maximum value is returned.
-	virtual void get_innovation_test_status(uint16_t *status, float *mag, float *vel, float *pos, float *hgt, float *tas, float *hagl, float *beta) = 0;
+	// Where a measurement type is a vector quantity, eg magnetometer, GPS position, etc, the maximum value is returned.
+	virtual void get_innovation_test_status(uint16_t &status, float &mag, float &vel, float &pos, float &hgt, float &tas, float &hagl, float &beta) = 0;
 
 	// return a bitmask integer that describes which state estimates can be used for flight control
 	virtual void get_ekf_soln_status(uint16_t *status) = 0;
 
 	// Getter for the average imu update period in s
-	float get_dt_imu_avg()
-	{
-		return _dt_imu_avg;
-	}
+	float get_dt_imu_avg() const { return _dt_imu_avg; }
 
 	// Getter for the imu sample on the delayed time horizon
 	imuSample get_imu_sample_delayed()
@@ -361,25 +392,29 @@ public:
 		return _baro_sample_delayed;
 	}
 
-	// Getter for a flag indicating if the ekf should update (completed downsampling process)
-	bool get_imu_updated()
-	{
-		return _imu_updated;
-	}
-
 	void print_status();
 
-	static const unsigned FILTER_UPDATE_PERIOD_MS = 8;	// ekf prediction period in milliseconds - this should ideally be an integer multiple of the IMU time delta
+	static constexpr unsigned FILTER_UPDATE_PERIOD_MS{10};	// ekf prediction period in milliseconds - this should ideally be an integer multiple of the IMU time delta
+	static constexpr float FILTER_UPDATE_PERIOD_S{FILTER_UPDATE_PERIOD_MS * 0.001f};
+
+	// request the EKF reset the yaw to the estimate from the internal EKF-GSF filter
+	// argment should be incremented only when a new reset is required
+	virtual void requestEmergencyNavReset() = 0;
+
+	// get ekf-gsf debug data
+	virtual bool getDataEKFGSF(float *yaw_composite, float *yaw_variance, float yaw[N_MODELS_EKFGSF], float innov_VN[N_MODELS_EKFGSF], float innov_VE[N_MODELS_EKFGSF], float weight[N_MODELS_EKFGSF]) = 0;
 
 protected:
 
 	parameters _params;		// filter parameters
 
+	ImuDownSampler _imu_down_sampler;
+
 	/*
 	 OBS_BUFFER_LENGTH defines how many observations (non-IMU measurements) we can buffer
 	 which sets the maximum frequency at which we can process non-IMU measurements. Measurements that
 	 arrive too soon after the previous measurement will not be processed.
-	 max freq (Hz) = (OBS_BUFFER_LENGTH - 1) / (IMU_BUFFER_LENGTH * FILTER_UPDATE_PERIOD_MS * 0.001)
+	 max freq (Hz) = (OBS_BUFFER_LENGTH - 1) / (IMU_BUFFER_LENGTH * FILTER_UPDATE_PERIOD_S)
 	 This can be adjusted to match the max sensor data rate plus some margin for jitter.
 	*/
 	uint8_t _obs_buffer_length{0};
@@ -402,7 +437,7 @@ protected:
 	magSample _mag_sample_delayed{};
 	baroSample _baro_sample_delayed{};
 	gpsSample _gps_sample_delayed{};
-	rangeSample _range_sample_delayed{};
+	sensor::SensorRangeFinder _range_sensor{};
 	airspeedSample _airspeed_sample_delayed{};
 	flowSample _flow_sample_delayed{};
 	extVisionSample _ev_sample_delayed{};
@@ -413,19 +448,20 @@ protected:
 	// Used by the multi-rotor specific drag force fusion
 	uint8_t _drag_sample_count{0};	// number of drag specific force samples assumulated at the filter prediction rate
 	float _drag_sample_time_dt{0.0f};	// time integral across all samples used to form _drag_down_sampled (sec)
-	float _air_density{1.225f};		// air density (kg/m**3)
+	float _air_density{CONSTANTS_AIR_DENSITY_SEA_LEVEL_15C};		// air density (kg/m**3)
+
+	// Sensor limitations
+	float _flow_max_rate{0.0f}; ///< maximum angular flow rate that the optical flow sensor can measure (rad/s)
+	float _flow_min_distance{0.0f};	///< minimum distance that the optical flow sensor can operate at (m)
+	float _flow_max_distance{0.0f};	///< maximum distance that the optical flow sensor can operate at (m)
 
 	// Output Predictor
-	outputSample _output_sample_delayed{};	// filter output on the delayed time horizon
 	outputSample _output_new{};		// filter output on the non-delayed time horizon
-	outputVert _output_vert_delayed{};	// vertical filter output on the delayed time horizon
 	outputVert _output_vert_new{};		// vertical filter output on the non-delayed time horizon
-	imuSample _imu_sample_new{};		// imu sample capturing the newest imu data
+	imuSample _newest_high_rate_imu_sample{};		// imu sample capturing the newest imu data
 	Matrix3f _R_to_earth_now;		// rotation matrix from body to earth frame at current time
 	Vector3f _vel_imu_rel_body_ned;		// velocity of IMU relative to body origin in NED earth frame
-	Vector3f _vel_deriv_ned;		// velocity derivative at the IMU in NED earth frame (m/s/s)
-
-	uint64_t _imu_ticks{0};	// counter for imu updates
+	Vector3f _vel_deriv;		// velocity derivative at the IMU in NED earth frame (m/s/s)
 
 	bool _imu_updated{false};      // true if the ekf should update (completed downsampling process)
 	bool _initialised{false};      // true if the ekf interface instance (data buffering) is initialized
@@ -437,26 +473,42 @@ protected:
 	struct map_projection_reference_s _pos_ref {};   // Contains WGS-84 position latitude and longitude (radians) of the EKF origin
 	struct map_projection_reference_s _gps_pos_prev {};   // Contains WGS-84 position latitude and longitude (radians) of the previous GPS message
 	float _gps_alt_prev{0.0f};	// height from the previous GPS message (m)
+	float _gps_yaw_offset{0.0f};	// Yaw offset angle for dual GPS antennas used for yaw estimation (radians).
 
 	// innovation consistency check monitoring ratios
-	float _yaw_test_ratio{0.0f};          // yaw innovation consistency check ratio
-	float _mag_test_ratio[3] {};      // magnetometer XYZ innovation consistency check ratios
-	float _vel_pos_test_ratio[6] {};  // velocity and position innovation consistency check ratios
-	float _tas_test_ratio{0.0f};		// tas innovation consistency check ratio
-	float _terr_test_ratio{0.0f};		// height above terrain measurement innovation consistency check ratio
-	float _beta_test_ratio{0.0f};		// sideslip innovation consistency check ratio
-	float _drag_test_ratio[2] {};	// drag innovation cinsistency check ratio
+	float _yaw_test_ratio{};		// yaw innovation consistency check ratio
+	Vector3f _mag_test_ratio;		// magnetometer XYZ innovation consistency check ratios
+	Vector2f _gps_vel_test_ratio;		// GPS velocity innovation consistency check ratios
+	Vector2f _gps_pos_test_ratio;		// GPS position innovation consistency check ratios
+	Vector2f _ev_vel_test_ratio;		// EV velocity innovation consistency check ratios
+	Vector2f _ev_pos_test_ratio ;		// EV position innovation consistency check ratios
+	Vector2f _aux_vel_test_ratio;		// Auxiliray horizontal velocity innovation consistency check ratio
+	Vector2f _baro_hgt_test_ratio;		// baro height innovation consistency check ratios
+	Vector2f _rng_hgt_test_ratio;		// range finder height innovation consistency check ratios
+	float _optflow_test_ratio{};		// Optical flow innovation consistency check ratio
+	float _tas_test_ratio{};		// tas innovation consistency check ratio
+	float _hagl_test_ratio{};		// height above terrain measurement innovation consistency check ratio
+	float _beta_test_ratio{};		// sideslip innovation consistency check ratio
+	Vector2f _drag_test_ratio;		// drag innovation consistency check ratio
 	innovation_fault_status_u _innov_check_fail_status{};
 
-	bool _is_dead_reckoning{false};	// true if we are no longer fusing measurements that constrain horizontal velocity drift
+	bool _is_dead_reckoning{false};		// true if we are no longer fusing measurements that constrain horizontal velocity drift
+	bool _deadreckon_time_exceeded{true};	// true if the horizontal nav solution has been deadreckoning for too long and is invalid
+	bool _is_wind_dead_reckoning{false};	// true if we are navigationg reliant on wind relative measurements
 
-	// IMU vibration monitoring
+	// IMU vibration and movement monitoring
 	Vector3f _delta_ang_prev;	// delta angle from the previous IMU measurement
 	Vector3f _delta_vel_prev;	// delta velocity from the previous IMU measurement
-	float _vibe_metrics[3] {};	// IMU vibration metrics
+	Vector3f _vibe_metrics;	// IMU vibration metrics
 					// [0] Level of coning vibration in the IMU delta angles (rad^2)
-					// [1] high frequency vibraton level in the IMU delta angle data (rad)
+					// [1] high frequency vibration level in the IMU delta angle data (rad)
 					// [2] high frequency vibration level in the IMU delta velocity data (m/s)
+	float _gps_drift_metrics[3] {};	// Array containing GPS drift metrics
+					// [0] Horizontal position drift rate (m/s)
+					// [1] Vertical position drift rate (m/s)
+					// [2] Filtered horizontal velocity (m/s)
+	uint64_t _time_last_move_detect_us{0};	// timestamp of last movement detection event in microseconds
+	bool _gps_drift_updated{false};	// true when _gps_drift_metrics has been updated and is ready for retrieval
 
 	// data buffer instances
 	RingBuffer<imuSample> _imu_buffer;
@@ -472,6 +524,9 @@ protected:
 	RingBuffer<dragSample> _drag_buffer;
 	RingBuffer<auxVelSample> _auxvel_buffer;
 
+	// yaw estimator instance
+	EKFGSF_yaw yawEstimator;
+
 	// observation buffer final allocation failed
 	bool _gps_buffer_fail{false};
 	bool _mag_buffer_fail{false};
@@ -483,27 +538,40 @@ protected:
 	bool _drag_buffer_fail{false};
 	bool _auxvel_buffer_fail{false};
 
-	uint64_t _time_last_imu{0};	// timestamp of last imu sample in microseconds
-	uint64_t _time_last_gps{0};	// timestamp of last gps measurement in microseconds
-	uint64_t _time_last_mag{0};	// timestamp of last magnetometer measurement in microseconds
-	uint64_t _time_last_baro{0};	// timestamp of last barometer measurement in microseconds
-	uint64_t _time_last_range{0};	// timestamp of last range measurement in microseconds
-	uint64_t _time_last_airspeed{0};	// timestamp of last airspeed measurement in microseconds
-	uint64_t _time_last_ext_vision{0}; // timestamp of last external vision measurement in microseconds
+	// timestamps of latest in buffer saved measurement in microseconds
+	uint64_t _time_last_imu{0};
+	uint64_t _time_last_gps{0};
+	uint64_t _time_last_mag{0}; ///< measurement time of last magnetomter sample (uSec)
+	uint64_t _time_last_baro{0};
+	uint64_t _time_last_range{0};
+	uint64_t _time_last_airspeed{0};
+	uint64_t _time_last_ext_vision{0};
 	uint64_t _time_last_optflow{0};
-	uint64_t _time_last_gnd_effect_on{0};	//last time the baro ground effect compensation was turned on externally (uSec)
 	uint64_t _time_last_auxvel{0};
+	//last time the baro ground effect compensation was turned on externally (uSec)
+	uint64_t _time_last_gnd_effect_on{0};
+
+	// Used to downsample magnetometer data
+	Vector3f _mag_data_sum;
+	uint8_t _mag_sample_count {0};
+	uint64_t _mag_timestamp_sum {0};
+
+	// Used to down sample barometer data
+	float _baro_alt_sum {0.0f};			// summed pressure altitude readings (m)
+	uint8_t _baro_sample_count {0};		// number of barometric altitude measurements summed
+	uint64_t _baro_timestamp_sum {0};	// summed timestamp to provide the timestamp of the averaged sample
 
 	fault_status_u _fault_status{};
 
-	// allocate data buffers and intialise interface variables
+	// allocate data buffers and initialize interface variables
 	bool initialise_interface(uint64_t timestamp);
 
 	// free buffer memory
 	void unallocate_buffers();
 
-	float _mag_declination_gps{0.0f};         // magnetic declination returned by the geo library using the last valid GPS position (rad)
-	float _mag_declination_to_save_deg{0.0f}; // magnetic declination to save to EKF2_MAG_DECL (deg)
+	float _mag_declination_gps{NAN};         // magnetic declination returned by the geo library using the last valid GPS position (rad)
+	float _mag_inclination_gps{NAN};	  // magnetic inclination returned by the geo library using the last valid GPS position (rad)
+	float _mag_strength_gps{NAN};	          // magnetic strength returned by the geo library using the last valid GPS position (T)
 
 	// this is the current status of the filter control modes
 	filter_control_status_u _control_status{};
@@ -511,10 +579,12 @@ protected:
 	// this is the previous status of the filter control modes - used to detect mode transitions
 	filter_control_status_u _control_status_prev{};
 
-	// perform a vector cross product
-	Vector3f cross_product(const Vector3f &vecIn1, const Vector3f &vecIn2);
+	inline void setDragData();
 
-	// calculate the inverse rotation matrix from a quaternion rotation
-	Matrix3f quat_to_invrotmat(const Quatf &quat);
+	inline void computeVibrationMetric();
+	inline bool checkIfVehicleAtRest(float dt);
 
+	virtual float compensateBaroForDynamicPressure(const float baro_alt_uncompensated) = 0;
+
+	void printBufferAllocationFailed(const char * buffer_name);
 };
