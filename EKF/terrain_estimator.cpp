@@ -83,16 +83,6 @@ bool Ekf::initHagl()
 	return initialized;
 }
 
-bool Ekf::shouldUseRangeFinderForHagl() const
-{
-	return (_params.terrain_fusion_mode & TerrainFusionMask::TerrainFuseRangeFinder);
-}
-
-bool Ekf::shouldUseOpticalFlowForHagl() const
-{
-	return (_params.terrain_fusion_mode & TerrainFusionMask::TerrainFuseOpticalFlow);
-}
-
 void Ekf::runTerrainEstimator()
 {
 	// If we are on ground, store the local position and time to use as a reference
@@ -176,9 +166,11 @@ void Ekf::fuseHagl()
 
 	} else {
 		// If we have been rejecting range data for too long, reset to measurement
-		if (isTimedOut(_time_last_hagl_fuse, (uint64_t)10E6)) {
+		const uint64_t timeout = static_cast<uint64_t>(_params.terrain_timeout * 1e6f);
+		if (isTimedOut(_time_last_hagl_fuse, timeout)) {
 			_terrain_vpos = _state.pos(2) + meas_hagl;
 			_terrain_var = obs_variance;
+			_terrain_vpos_reset_counter++;
 
 		} else {
 			_innov_check_fail_status.flags.reject_hagl = true;
@@ -254,7 +246,7 @@ void Ekf::fuseFlowForTerrain()
 		_terrain_vpos += Kx * _flow_innov(0);
 		// guard against negative variance
 		_terrain_var = fmaxf(_terrain_var - KxHxP, 0.0f);
-		_time_last_of_fuse = _time_last_imu;
+		_time_last_flow_terrain_fuse = _time_last_imu;
 	}
 
 	// Calculate observation matrix for flow around the vehicle y axis
@@ -282,13 +274,8 @@ void Ekf::fuseFlowForTerrain()
 		_terrain_vpos += Ky * _flow_innov(1);
 		// guard against negative variance
 		_terrain_var = fmaxf(_terrain_var - KyHyP, 0.0f);
-		_time_last_of_fuse = _time_last_imu;
+		_time_last_flow_terrain_fuse = _time_last_imu;
 	}
-}
-
-bool Ekf::isTerrainEstimateValid() const
-{
-	return _hagl_valid;
 }
 
 void Ekf::updateTerrainValidity()
@@ -298,20 +285,13 @@ void Ekf::updateTerrainValidity()
 
 	// we have been fusing optical flow measurements for terrain estimation within the last 5 seconds
 	// this can only be the case if the main filter does not fuse optical flow
-	const bool recent_flow_for_terrain_fusion = isRecent(_time_last_of_fuse, (uint64_t)5e6)
-						    && !_control_status.flags.opt_flow;
+	const bool recent_flow_for_terrain_fusion = isRecent(_time_last_flow_terrain_fuse, (uint64_t)5e6);
 
 	_hagl_valid = (_terrain_initialised && (recent_range_fusion || recent_flow_for_terrain_fusion));
 
 	_hagl_sensor_status.flags.range_finder = shouldUseRangeFinderForHagl()
 						 && recent_range_fusion
 						 && (_time_last_fake_hagl_fuse != _time_last_hagl_fuse);
-	_hagl_sensor_status.flags.flow = shouldUseOpticalFlowForHagl()
-					 && recent_flow_for_terrain_fusion;
-}
 
-// get the estimated vertical position of the terrain relative to the NED origin
-float Ekf::getTerrainVertPos() const
-{
-	return _terrain_vpos;
+	_hagl_sensor_status.flags.flow = shouldUseOpticalFlowForHagl() && recent_flow_for_terrain_fusion;
 }

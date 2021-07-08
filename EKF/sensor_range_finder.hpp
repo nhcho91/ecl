@@ -57,6 +57,7 @@ public:
 	void runChecks(uint64_t current_time_us, const matrix::Dcmf &R_to_earth);
 	bool isHealthy() const override { return _is_sample_valid; }
 	bool isDataHealthy() const override { return _is_sample_ready && _is_sample_valid; }
+	bool isRegularlySendingData() const override { return _is_regularly_sending_data; }
 
 	void setSample(const rangeSample &sample) {
 		_sample = sample;
@@ -81,6 +82,10 @@ public:
 	void setLimits(float min_distance, float max_distance) {
 		_rng_valid_min_val = min_distance;
 		_rng_valid_max_val = max_distance;
+	}
+
+	void setQualityHysteresis(float valid_quality_threshold_s){
+		_quality_hyst_us = uint64_t(valid_quality_threshold_s * 1e6f);
 	}
 
 	float getCosTilt() const { return _cos_tilt_rng_to_earth; }
@@ -111,6 +116,7 @@ private:
 
 	bool _is_sample_ready{};	///< true when new range finder data has fallen behind the fusion time horizon and is available to be fused
 	bool _is_sample_valid{};	///< true if range finder sample retrieved from buffer is valid
+	bool _is_regularly_sending_data{false}; ///< true if the interval between two samples is less than the maximum expected interval
 	uint64_t _time_last_valid_us{};	///< time the last range finder measurement was ready (uSec)
 
 	/*
@@ -146,7 +152,7 @@ private:
 	 * Quality check
 	 */
 	uint64_t _time_bad_quality_us{};	///< timestamp at which range finder signal quality was 0 (used for hysteresis)
-	uint64_t _quality_hyst_us{1000000}; 	///< minimum duration during which the reported range finder signal quality needs to be non-zero in order to be declared valid (us)
+	uint64_t _quality_hyst_us{};		///< minimum duration during which the reported range finder signal quality needs to be non-zero in order to be declared valid (us)
 };
 
 } // namespace sensor

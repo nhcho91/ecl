@@ -61,17 +61,21 @@ bool Ekf::collect_gps(const gps_message &gps)
 	// Run GPS checks always
 	_gps_checks_passed = gps_is_good(gps);
 
-	if (!_NED_origin_initialised && _gps_checks_passed) {
+	if (_filter_initialised && !_NED_origin_initialised && _gps_checks_passed) {
 		// If we have good GPS data set the origin's WGS-84 position to the last gps fix
 		const double lat = gps.lat * 1.0e-7;
 		const double lon = gps.lon * 1.0e-7;
-		map_projection_init_timestamped(&_pos_ref, lat, lon, _time_last_imu);
 
-		// if we are already doing aiding, correct for the change in position since the EKF started navigationg
-		if (isHorizontalAidingActive()) {
-			double est_lat, est_lon;
-			map_projection_reproject(&_pos_ref, -_state.pos(0), -_state.pos(1), &est_lat, &est_lon);
-			map_projection_init_timestamped(&_pos_ref, est_lat, est_lon, _time_last_imu);
+		if (!map_projection_initialized(&_pos_ref)) {
+			map_projection_init_timestamped(&_pos_ref, lat, lon, _time_last_imu);
+
+			// if we are already doing aiding, correct for the change in position since the EKF started navigating
+			if (isHorizontalAidingActive()) {
+				double est_lat;
+				double est_lon;
+				map_projection_reproject(&_pos_ref, -_state.pos(0), -_state.pos(1), &est_lat, &est_lon);
+				map_projection_init_timestamped(&_pos_ref, est_lat, est_lon, _time_last_imu);
+			}
 		}
 
 		// Take the current GPS height and subtract the filter height above origin to estimate the GPS height of the origin
@@ -85,11 +89,11 @@ bool Ekf::collect_gps(const gps_message &gps)
 		// set the magnetic field data returned by the geo library using the current GPS position
 		_mag_declination_gps = get_mag_declination_radians(lat, lon);
 		_mag_inclination_gps = get_mag_inclination_radians(lat, lon);
-		_mag_strength_gps = get_mag_strength_tesla(lat, lon);
+		_mag_strength_gps = get_mag_strength_gauss(lat, lon);
 
 		// request a reset of the yaw using the new declination
 		if (_params.mag_fusion_type == MAG_FUSE_TYPE_NONE) {
-			// try to reset the yaw using the EKF-GSF yaw esitimator
+			// try to reset the yaw using the EKF-GSF yaw estimator
 			_do_ekfgsf_yaw_reset = true;
 			_ekfgsf_yaw_reset_time = 0;
 
@@ -104,12 +108,12 @@ bool Ekf::collect_gps(const gps_message &gps)
 		_gps_origin_epv = gps.epv;
 
 		// if the user has selected GPS as the primary height source, switch across to using it
-
 		if (_params.vdist_sensor_type == VDIST_SENSOR_GPS) {
 			startGpsHgtFusion();
 		}
 
-		ECL_INFO_TIMESTAMPED("GPS checks passed");
+		_information_events.flags.gps_checks_passed = true;
+		ECL_INFO("GPS checks passed");
 
 	} else if (!_NED_origin_initialised) {
 		// a rough 2D fix is still sufficient to lookup declination
@@ -124,7 +128,7 @@ bool Ekf::collect_gps(const gps_message &gps)
 			// set the magnetic field data returned by the geo library using the current GPS position
 			_mag_declination_gps = get_mag_declination_radians(lat, lon);
 			_mag_inclination_gps = get_mag_inclination_radians(lat, lon);
-			_mag_strength_gps = get_mag_strength_tesla(lat, lon);
+			_mag_strength_gps = get_mag_strength_gauss(lat, lon);
 
 			// request mag yaw reset if there's a mag declination for the first time
 			if (_params.mag_fusion_type != MAG_FUSE_TYPE_NONE) {

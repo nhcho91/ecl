@@ -58,7 +58,6 @@ void Ekf::controlMagFusion()
 		return;
 	}
 
-	updateMagFilter();
 	checkMagFieldStrength();
 
 	// If we are on ground, reset the flight alignment flag so that the mag fields will be
@@ -68,24 +67,21 @@ void Ekf::controlMagFusion()
 		_num_bad_flight_yaw_events = 0;
 	}
 
-	if (_control_status.flags.mag_fault || !_control_status.flags.yaw_align) {
+	if (_control_status.flags.mag_fault || !_control_status.flags.tilt_align) {
 		stopMagFusion();
 		return;
 	}
 
+	_mag_yaw_reset_req |= otherHeadingSourcesHaveStopped();
+	_mag_yaw_reset_req |= !_control_status.flags.yaw_align;
+	_mag_yaw_reset_req |= _mag_inhibit_yaw_reset_req;
+
 	if (noOtherYawAidingThanMag() && _mag_data_ready) {
-		if (_control_status.flags.in_air) {
-			checkHaglYawResetReq();
-			runInAirYawReset();
-			runVelPosReset();
-
-		} else {
-			runOnGroundYawReset();
-		}
-
 		// Determine if we should use simple magnetic heading fusion which works better when
 		// there are large external disturbances or the more accurate 3-axis fusion
 		switch (_params.mag_fusion_type) {
+		default:
+		/* fallthrough */
 		case MAG_FUSE_TYPE_AUTO:
 			selectMagAuto();
 			break;
@@ -99,23 +95,26 @@ void Ekf::controlMagFusion()
 		case MAG_FUSE_TYPE_3D:
 			startMag3DFusion();
 			break;
+		}
 
-		default:
-			selectMagAuto();
-			break;
+		if (_control_status.flags.in_air) {
+			checkHaglYawResetReq();
+			runInAirYawReset();
+			runVelPosReset(); // TODO: review this; a vel/pos reset can be requested from COG reset (for fixedwing) only
+
+		} else {
+			runOnGroundYawReset();
+		}
+
+		if (!_control_status.flags.yaw_align) {
+			// Having the yaw aligned is mandatory to continue
+			return;
 		}
 
 		checkMagDeclRequired();
 		checkMagInhibition();
 
 		runMagAndMagDeclFusions();
-	}
-}
-
-void Ekf::updateMagFilter()
-{
-	if (_mag_data_ready) {
-		_mag_lpf.update(_mag_sample_delayed.mag);
 	}
 }
 
@@ -138,11 +137,6 @@ void Ekf::checkHaglYawResetReq()
 	}
 }
 
-float Ekf::getTerrainVPos() const
-{
-	return isTerrainEstimateValid() ? _terrain_vpos : _last_on_ground_posD;
-}
-
 void Ekf::runOnGroundYawReset()
 {
 	if (_mag_yaw_reset_req && isYawResetAuthorized()) {
@@ -150,13 +144,19 @@ void Ekf::runOnGroundYawReset()
 					       ? resetMagHeading(_mag_lpf.getState())
 					       : false;
 
-		_mag_yaw_reset_req = !has_realigned_yaw;
-	}
-}
+		if (has_realigned_yaw) {
+			_mag_yaw_reset_req = false;
+			_control_status.flags.yaw_align = true;
 
-bool Ekf::isYawResetAuthorized() const
-{
-	return !_is_yaw_fusion_inhibited;
+			// Handle the special case where we have not been constraining yaw drift or learning yaw bias due
+			// to assumed invalid mag field associated with indoor operation with a downwards looking flow sensor.
+			if (_mag_inhibit_yaw_reset_req) {
+				_mag_inhibit_yaw_reset_req = false;
+				// Zero the yaw bias covariance and set the variance to the initial alignment uncertainty
+				P.uncorrelateCovarianceSetVariance<1>(12, sq(_params.switch_on_gyro_bias * FILTER_UPDATE_PERIOD_S));
+			}
+		}
+	}
 }
 
 bool Ekf::canResetMagHeading() const
@@ -172,14 +172,21 @@ void Ekf::runInAirYawReset()
 		if (canRealignYawUsingGps()) { has_realigned_yaw = realignYawGPS(); }
 		else if (canResetMagHeading()) { has_realigned_yaw = resetMagHeading(_mag_lpf.getState()); }
 
-		_mag_yaw_reset_req = !has_realigned_yaw;
-		_control_status.flags.mag_aligned_in_flight = has_realigned_yaw;
-	}
-}
+		if (has_realigned_yaw) {
+			_mag_yaw_reset_req = false;
+			_control_status.flags.yaw_align = true;
+			_control_status.flags.mag_aligned_in_flight = true;
 
-bool Ekf::canRealignYawUsingGps() const
-{
-	return _control_status.flags.fixed_wing;
+			// Handle the special case where we have not been constraining yaw drift or learning yaw bias due
+			// to assumed invalid mag field associated with indoor operation with a downwards looking flow sensor.
+			if (_mag_inhibit_yaw_reset_req) {
+				_mag_inhibit_yaw_reset_req = false;
+				// Zero the yaw bias covariance and set the variance to the initial alignment uncertainty
+				P.uncorrelateCovarianceSetVariance<1>(12, sq(_params.switch_on_gyro_bias * FILTER_UPDATE_PERIOD_S));
+			}
+		}
+
+	}
 }
 
 void Ekf::runVelPosReset()
@@ -235,16 +242,6 @@ void Ekf::checkMagBiasObservability()
 
 	_yaw_delta_ef = 0.0f;
 	_time_yaw_started = _imu_sample_delayed.time_us;
-}
-
-bool Ekf::isYawAngleObservable() const
-{
-	return _yaw_angle_observable;
-}
-
-bool Ekf::isMagBiasObservable() const
-{
-	return _mag_bias_observable;
 }
 
 bool Ekf::canUse3DMagFusion() const
@@ -308,11 +305,6 @@ void Ekf::checkMagFieldStrength()
 	}
 }
 
-bool Ekf::isStrongMagneticDisturbance() const
-{
-	return _control_status.flags.mag_field_disturbed;
-}
-
 bool Ekf::isMeasuredMatchingGpsMagStrength() const
 {
 	constexpr float wmm_gate_size = 0.2f; // +/- Gauss
@@ -365,3 +357,12 @@ void Ekf::run3DMagAndDeclFusions()
 	}
 }
 
+bool Ekf::otherHeadingSourcesHaveStopped()
+{
+    // detect rising edge of noOtherYawAidingThanMag()
+    bool result = noOtherYawAidingThanMag() && _non_mag_yaw_aiding_running_prev;
+
+    _non_mag_yaw_aiding_running_prev = !noOtherYawAidingThanMag();
+
+    return  result;
+}

@@ -50,8 +50,7 @@ void EstimatorInterface::setIMUData(const imuSample &imu_sample)
 {
 	// TODO: resolve misplaced responsibility
 	if (!_initialised) {
-		init(imu_sample.time_us);
-		_initialised = true;
+		_initialised = init(imu_sample.time_us);
 	}
 
 	const float dt = math::constrain((imu_sample.time_us - _time_last_imu) / 1e6f, 1.0e-4f, 0.02f);
@@ -65,14 +64,13 @@ void EstimatorInterface::setIMUData(const imuSample &imu_sample)
 	_newest_high_rate_imu_sample = imu_sample;
 
 	// Do not change order of computeVibrationMetric and checkIfVehicleAtRest
-	computeVibrationMetric();
-	_control_status.flags.vehicle_at_rest = checkIfVehicleAtRest(dt);
+	computeVibrationMetric(imu_sample);
+	_control_status.flags.vehicle_at_rest = checkIfVehicleAtRest(dt, imu_sample);
 
-	const bool new_downsampled_imu_sample_ready = _imu_down_sampler.update(_newest_high_rate_imu_sample);
-	_imu_updated = new_downsampled_imu_sample_ready;
+	_imu_updated = _imu_down_sampler.update(imu_sample);
 
 	// accumulate and down-sample imu data and push to the buffer when new downsampled data becomes available
-	if (new_downsampled_imu_sample_ready) {
+	if (_imu_updated) {
 
 		_imu_buffer.push(_imu_down_sampler.getDownSampledImuAndTriggerReset());
 
@@ -81,44 +79,44 @@ void EstimatorInterface::setIMUData(const imuSample &imu_sample)
 
 		// calculate the minimum interval between observations required to guarantee no loss of data
 		// this will occur if data is overwritten before its time stamp falls behind the fusion time horizon
-		_min_obs_interval_us = (_newest_high_rate_imu_sample.time_us - _imu_sample_delayed.time_us) / (_obs_buffer_length - 1);
+		_min_obs_interval_us = (imu_sample.time_us - _imu_sample_delayed.time_us) / (_obs_buffer_length - 1);
 
-		setDragData();
+		setDragData(imu_sample);
 	}
 }
 
-void EstimatorInterface::computeVibrationMetric()
+void EstimatorInterface::computeVibrationMetric(const imuSample &imu)
 {
 	// calculate a metric which indicates the amount of coning vibration
-	Vector3f temp = _newest_high_rate_imu_sample.delta_ang % _delta_ang_prev;
+	Vector3f temp = imu.delta_ang % _delta_ang_prev;
 	_vibe_metrics(0) = 0.99f * _vibe_metrics(0) + 0.01f * temp.norm();
 
 	// calculate a metric which indicates the amount of high frequency gyro vibration
-	temp = _newest_high_rate_imu_sample.delta_ang - _delta_ang_prev;
-	_delta_ang_prev = _newest_high_rate_imu_sample.delta_ang;
+	temp = imu.delta_ang - _delta_ang_prev;
+	_delta_ang_prev = imu.delta_ang;
 	_vibe_metrics(1) = 0.99f * _vibe_metrics(1) + 0.01f * temp.norm();
 
 	// calculate a metric which indicates the amount of high frequency accelerometer vibration
-	temp = _newest_high_rate_imu_sample.delta_vel - _delta_vel_prev;
-	_delta_vel_prev = _newest_high_rate_imu_sample.delta_vel;
+	temp = imu.delta_vel - _delta_vel_prev;
+	_delta_vel_prev = imu.delta_vel;
 	_vibe_metrics(2) = 0.99f * _vibe_metrics(2) + 0.01f * temp.norm();
 }
 
-bool EstimatorInterface::checkIfVehicleAtRest(float dt)
+bool EstimatorInterface::checkIfVehicleAtRest(float dt, const imuSample &imu)
 {
 	// detect if the vehicle is not moving when on ground
 	if (!_control_status.flags.in_air) {
 		if ((_vibe_metrics(1) * 4.0E4f > _params.is_moving_scaler)
-				|| (_vibe_metrics(2) * 2.1E2f > _params.is_moving_scaler)
-				|| ((_newest_high_rate_imu_sample.delta_ang.norm() / dt) > 0.05f * _params.is_moving_scaler)) {
+		    || (_vibe_metrics(2) * 2.1E2f > _params.is_moving_scaler)
+		    || ((imu.delta_ang.norm() / dt) > 0.05f * _params.is_moving_scaler)) {
 
-			_time_last_move_detect_us = _newest_high_rate_imu_sample.time_us;
+			_time_last_move_detect_us = imu.time_us;
 		}
 
-		return ((_newest_high_rate_imu_sample.time_us - _time_last_move_detect_us) > (uint64_t)1E6);
+		return ((imu.time_us - _time_last_move_detect_us) > (uint64_t)1E6);
 
 	} else {
-		_time_last_move_detect_us = _newest_high_rate_imu_sample.time_us;
+		_time_last_move_detect_us = imu.time_us;
 		return false;
 	}
 }
@@ -207,8 +205,10 @@ void EstimatorInterface::setGpsData(const gps_message &gps)
 		gps_sample_new.hgt = (float)gps.alt * 1e-3f;
 
 		gps_sample_new.yaw = gps.yaw;
+
 		if (ISFINITE(gps.yaw_offset)) {
 			_gps_yaw_offset = gps.yaw_offset;
+
 		} else {
 			_gps_yaw_offset = 0.0f;
 		}
@@ -305,7 +305,7 @@ void EstimatorInterface::setAirspeedData(const airspeedSample &airspeed_sample)
 	}
 }
 
-void EstimatorInterface::setRangeData(const rangeSample& range_sample)
+void EstimatorInterface::setRangeData(const rangeSample &range_sample)
 {
 	if (!_initialised || _range_buffer_fail) {
 		return;
@@ -334,7 +334,7 @@ void EstimatorInterface::setRangeData(const rangeSample& range_sample)
 	}
 }
 
-void EstimatorInterface::setOpticalFlowData(const flowSample& flow)
+void EstimatorInterface::setOpticalFlowData(const flowSample &flow)
 {
 	if (!_initialised || _flow_buffer_fail) {
 		return;
@@ -353,51 +353,19 @@ void EstimatorInterface::setOpticalFlowData(const flowSample& flow)
 
 	// limit data rate to prevent data being lost
 	if ((flow.time_us - _time_last_optflow) > _min_obs_interval_us) {
-		// check if enough integration time and fail if integration time is less than 50%
-		// of min arrival interval because too much data is being lost
-		float delta_time = flow.dt; // in seconds
-		const float delta_time_min = 0.5e-6f * (float)_min_obs_interval_us;
-		const bool delta_time_good = delta_time >= delta_time_min;
+		_time_last_optflow = flow.time_us;
 
-		bool flow_magnitude_good = true;
+		flowSample optflow_sample_new = flow;
 
-		if (delta_time_good) {
-			// check magnitude is within sensor limits
-			// use this to prevent use of a saturated flow sensor
-			// when there are other aiding sources available
-			const float flow_rate_magnitude = flow.flow_xy_rad.norm() / delta_time;
-			flow_magnitude_good = (flow_rate_magnitude <= _flow_max_rate);
+		optflow_sample_new.time_us -= _params.flow_delay_ms * 1000;
+		optflow_sample_new.time_us -= FILTER_UPDATE_PERIOD_MS * 1000 / 2;
 
-		} else {
-			// protect against overflow caused by division with very small delta_time
-			delta_time = delta_time_min;
-		}
-
-		const bool relying_on_flow = !isOtherSourceOfHorizontalAidingThan(_control_status.flags.opt_flow);
-
-		const bool flow_quality_good = (flow.quality >= _params.flow_qual_min);
-
-		// Check data validity and write to buffers
-		// Invalid flow data is allowed when on ground and is handled as a special case in controlOpticalFlowFusion()
-		bool use_flow_data_to_navigate = delta_time_good && flow_quality_good && (flow_magnitude_good || relying_on_flow);
-		if (use_flow_data_to_navigate || (!_control_status.flags.in_air && relying_on_flow)) {
-
-			_time_last_optflow = flow.time_us;
-
-			flowSample optflow_sample_new = flow;
-
-			optflow_sample_new.time_us -= _params.flow_delay_ms * 1000;
-			optflow_sample_new.time_us -= FILTER_UPDATE_PERIOD_MS * 1000 / 2;
-
-			optflow_sample_new.dt = delta_time;
-
-			_flow_buffer.push(optflow_sample_new);
-		}
+		_flow_buffer.push(optflow_sample_new);
 	}
 }
 
 // set attitude and position data derived from an external vision system
-void EstimatorInterface::setExtVisionData(const extVisionSample& evdata)
+void EstimatorInterface::setExtVisionData(const extVisionSample &evdata)
 {
 	if (!_initialised || _ev_buffer_fail) {
 		return;
@@ -427,7 +395,7 @@ void EstimatorInterface::setExtVisionData(const extVisionSample& evdata)
 	}
 }
 
-void EstimatorInterface::setAuxVelData(const auxVelSample& auxvel_sample)
+void EstimatorInterface::setAuxVelData(const auxVelSample &auxvel_sample)
 {
 	if (!_initialised || _auxvel_buffer_fail) {
 		return;
@@ -457,7 +425,7 @@ void EstimatorInterface::setAuxVelData(const auxVelSample& auxvel_sample)
 	}
 }
 
-void EstimatorInterface::setDragData()
+void EstimatorInterface::setDragData(const imuSample &imu)
 {
 	// down-sample the drag specific force data by accumulating and calculating the mean when
 	// sufficient samples have been collected
@@ -476,10 +444,10 @@ void EstimatorInterface::setDragData()
 
 		_drag_sample_count ++;
 		// note acceleration is accumulated as a delta velocity
-		_drag_down_sampled.accelXY(0) += _newest_high_rate_imu_sample.delta_vel(0);
-		_drag_down_sampled.accelXY(1) += _newest_high_rate_imu_sample.delta_vel(1);
-		_drag_down_sampled.time_us += _newest_high_rate_imu_sample.time_us;
-		_drag_sample_time_dt += _newest_high_rate_imu_sample.delta_vel_dt;
+		_drag_down_sampled.accelXY(0) += imu.delta_vel(0);
+		_drag_down_sampled.accelXY(1) += imu.delta_vel(1);
+		_drag_down_sampled.time_us += imu.time_us;
+		_drag_sample_time_dt += imu.delta_vel_dt;
 
 		// calculate the downsample ratio for drag specific force data
 		uint8_t min_sample_ratio = (uint8_t) ceilf((float)_imu_buffer_length / _obs_buffer_length);
@@ -510,34 +478,51 @@ void EstimatorInterface::setDragData()
 bool EstimatorInterface::initialise_interface(uint64_t timestamp)
 {
 	// find the maximum time delay the buffers are required to handle
-	const uint16_t max_time_delay_ms = math::max(_params.mag_delay_ms,
-					     math::max(_params.range_delay_ms,
-					       math::max(_params.gps_delay_ms,
-						 math::max(_params.flow_delay_ms,
-						   math::max(_params.ev_delay_ms,
-						     math::max(_params.auxvel_delay_ms,
-						       math::max(_params.min_delay_ms,
-							 math::max(_params.airspeed_delay_ms,
-							 	     _params.baro_delay_ms))))))));
+	// it's reasonable to assume that barometer is always used, and its delay is low
+	// it's reasonable to assume that aux velocity device has low delay. TODO: check the delay only if the aux device is used
+	float max_time_delay_ms = math::max(_params.baro_delay_ms, _params.auxvel_delay_ms);
+
+	// using airspeed
+	if (_params.arsp_thr > FLT_EPSILON) {
+		max_time_delay_ms = math::max(_params.airspeed_delay_ms, max_time_delay_ms);
+	}
+
+	// mag mode
+	if (_params.mag_fusion_type != MAG_FUSE_TYPE_NONE) {
+		max_time_delay_ms = math::max(_params.mag_delay_ms, max_time_delay_ms);
+	}
+
+	// range aid or range height
+	if (_params.range_aid || (_params.vdist_sensor_type == VDIST_SENSOR_RANGE)) {
+		max_time_delay_ms = math::max(_params.range_delay_ms, max_time_delay_ms);
+	}
+
+	if (_params.fusion_mode & MASK_USE_GPS) {
+		max_time_delay_ms = math::max(_params.gps_delay_ms, max_time_delay_ms);
+	}
+
+	if (_params.fusion_mode & MASK_USE_OF) {
+		max_time_delay_ms = math::max(_params.flow_delay_ms, max_time_delay_ms);
+	}
+
+	if (_params.fusion_mode & (MASK_USE_EVPOS | MASK_USE_EVYAW | MASK_USE_EVVEL)) {
+		max_time_delay_ms = math::max(_params.ev_delay_ms, max_time_delay_ms);
+	}
 
 	// calculate the IMU buffer length required to accomodate the maximum delay with some allowance for jitter
-	_imu_buffer_length = (max_time_delay_ms / FILTER_UPDATE_PERIOD_MS) + 1;
+	_imu_buffer_length = ceilf(max_time_delay_ms / FILTER_UPDATE_PERIOD_MS) + 1;
 
 	// set the observation buffer length to handle the minimum time of arrival between observations in combination
 	// with the worst case delay from current time to ekf fusion time
 	// allow for worst case 50% extension of the ekf fusion time horizon delay due to timing jitter
-	const uint16_t ekf_delay_ms = max_time_delay_ms + (int)(ceilf((float)max_time_delay_ms * 0.5f));
-	_obs_buffer_length = (ekf_delay_ms / _params.sensor_interval_min_ms) + 1;
+	const float ekf_delay_ms = max_time_delay_ms * 1.5f;
+	_obs_buffer_length = ceilf(ekf_delay_ms / _params.sensor_interval_min_ms);
 
 	// limit to be no longer than the IMU buffer (we can't process data faster than the EKF prediction rate)
 	_obs_buffer_length = math::min(_obs_buffer_length, _imu_buffer_length);
 
-	if (!(_imu_buffer.allocate(_imu_buffer_length) &&
-	      _output_buffer.allocate(_imu_buffer_length) &&
-	      _output_vert_buffer.allocate(_imu_buffer_length))) {
-
-		printBufferAllocationFailed("");
-		unallocate_buffers();
+	if (!_imu_buffer.allocate(_imu_buffer_length) || !_output_buffer.allocate(_imu_buffer_length) || !_output_vert_buffer.allocate(_imu_buffer_length)) {
+		printBufferAllocationFailed("IMU and output");
 		return false;
 	}
 
@@ -549,29 +534,6 @@ bool EstimatorInterface::initialise_interface(uint64_t timestamp)
 	_fault_status.value = 0;
 
 	return true;
-}
-
-void EstimatorInterface::unallocate_buffers()
-{
-	_imu_buffer.unallocate();
-	_gps_buffer.unallocate();
-	_mag_buffer.unallocate();
-	_baro_buffer.unallocate();
-	_range_buffer.unallocate();
-	_airspeed_buffer.unallocate();
-	_flow_buffer.unallocate();
-	_ext_vision_buffer.unallocate();
-	_output_buffer.unallocate();
-	_output_vert_buffer.unallocate();
-	_drag_buffer.unallocate();
-	_auxvel_buffer.unallocate();
-
-}
-
-bool EstimatorInterface::local_position_is_valid()
-{
-	// return true if we are not doing unconstrained free inertial navigation
-	return !_deadreckon_time_exceeded;
 }
 
 bool EstimatorInterface::isOnlyActiveSourceOfHorizontalAiding(const bool aiding_flag) const
@@ -588,9 +550,12 @@ bool EstimatorInterface::isOtherSourceOfHorizontalAidingThan(const bool aiding_f
 int EstimatorInterface::getNumberOfActiveHorizontalAidingSources() const
 {
 	return int(_control_status.flags.gps)
-	+ int(_control_status.flags.opt_flow)
-	+ int(_control_status.flags.ev_pos)
-	+ int(_control_status.flags.ev_vel);
+	       + int(_control_status.flags.opt_flow)
+	       + int(_control_status.flags.ev_pos)
+	       + int(_control_status.flags.ev_vel)
+	       // Combined airspeed and sideslip fusion allows sustained wind relative dead reckoning
+	       // and so is treated as a single aiding source.
+	       + int(_control_status.flags.fuse_aspd && _control_status.flags.fuse_beta);
 }
 
 bool EstimatorInterface::isHorizontalAidingActive() const
@@ -598,19 +563,15 @@ bool EstimatorInterface::isHorizontalAidingActive() const
 	return getNumberOfActiveHorizontalAidingSources() > 0;
 }
 
-void EstimatorInterface::printBufferAllocationFailed(const char * buffer_name)
+void EstimatorInterface::printBufferAllocationFailed(const char *buffer_name)
 {
-	if(buffer_name)
-	{
+	if (buffer_name) {
 		ECL_ERR("%s buffer allocation failed", buffer_name);
 	}
 }
 
 void EstimatorInterface::print_status()
 {
-	ECL_INFO("local position valid: %s", local_position_is_valid() ? "yes" : "no");
-	ECL_INFO("global position valid: %s", global_position_is_valid() ? "yes" : "no");
-
 	ECL_INFO("imu buffer: %d (%d Bytes)", _imu_buffer.get_length(), _imu_buffer.get_total_size());
 	ECL_INFO("gps buffer: %d (%d Bytes)", _gps_buffer.get_length(), _gps_buffer.get_total_size());
 	ECL_INFO("mag buffer: %d (%d Bytes)", _mag_buffer.get_length(), _mag_buffer.get_total_size());

@@ -48,9 +48,6 @@ bool Ekf::init(uint64_t timestamp)
 {
 	bool ret = initialise_interface(timestamp);
 	reset();
-	_accel_lpf.setAlpha(.1f);
-	_gyro_lpf.setAlpha(.1f);
-	_mag_lpf.setAlpha(.1f);
 	return ret;
 }
 
@@ -80,6 +77,7 @@ void Ekf::reset()
 	_terrain_initialised = false;
 	_range_sensor.setPitchOffset(_params.rng_sens_pitch);
 	_range_sensor.setCosMaxTilt(_params.range_cos_max_tilt);
+	_range_sensor.setQualityHysteresis(_params.range_valid_quality_s);
 
 	_control_status.value = 0;
 	_control_status_prev.value = 0;
@@ -132,7 +130,7 @@ bool Ekf::update()
 
 	// the output observer always runs
 	// Use full rate IMU data at the current time horizon
-	calculateOutputStates();
+	calculateOutputStates(_newest_high_rate_imu_sample);
 
 	return updated;
 }
@@ -151,6 +149,7 @@ bool Ekf::initialiseFilter()
 		_accel_lpf.reset(imu_init.delta_vel / imu_init.delta_vel_dt);
 		_gyro_lpf.reset(imu_init.delta_ang / imu_init.delta_ang_dt);
 		_is_first_imu_sample = false;
+
 	} else {
 		_accel_lpf.update(imu_init.delta_vel / imu_init.delta_vel_dt);
 		_gyro_lpf.update(imu_init.delta_ang / imu_init.delta_ang_dt);
@@ -158,47 +157,55 @@ bool Ekf::initialiseFilter()
 
 	// Sum the magnetometer measurements
 	if (_mag_buffer.pop_first_older_than(_imu_sample_delayed.time_us, &_mag_sample_delayed)) {
-		if(_mag_sample_delayed.time_us != 0)
-		{
-			_mag_counter ++;
-			// wait for all bad initial data to be flushed
-			if (_mag_counter <= uint8_t(_obs_buffer_length + 1)) {
+		if (_mag_sample_delayed.time_us != 0) {
+			if (_mag_counter == 0) {
 				_mag_lpf.reset(_mag_sample_delayed.mag);
+
 			} else {
 				_mag_lpf.update(_mag_sample_delayed.mag);
 			}
+
+			_mag_counter++;
 		}
 	}
 
 	// accumulate enough height measurements to be confident in the quality of the data
 	if (_baro_buffer.pop_first_older_than(_imu_sample_delayed.time_us, &_baro_sample_delayed)) {
-		if (_baro_sample_delayed.time_us != 0)
-		{
-			_baro_counter ++;
-			// wait for all bad initial data to be flushed
-			if (_baro_counter <= uint8_t(_obs_buffer_length + 1)) {
+		if (_baro_sample_delayed.time_us != 0) {
+			if (_baro_counter == 0) {
 				_baro_hgt_offset = _baro_sample_delayed.hgt;
-			} else if (_baro_counter > (uint8_t)(_obs_buffer_length + 1)) {
+
+			} else {
 				_baro_hgt_offset = 0.9f * _baro_hgt_offset + 0.1f * _baro_sample_delayed.hgt;
 			}
+
+			_baro_counter++;
 		}
 	}
 
-	const bool not_enough_baro_samples_accumulated = _baro_counter <= 2u * _obs_buffer_length;
-	const bool not_enough_mag_samples_accumulated = _mag_counter <= 2u * _obs_buffer_length;
+	if (_params.mag_fusion_type <= MAG_FUSE_TYPE_3D) {
+		if (_mag_counter < _obs_buffer_length) {
+			// not enough mag samples accumulated
+			return false;
+		}
+	}
 
-	if (not_enough_baro_samples_accumulated || not_enough_mag_samples_accumulated) {
+	if (_baro_counter < _obs_buffer_length) {
+		// not enough baro samples accumulated
 		return false;
 	}
+
 	// we use baro height initially and switch to GPS/range/EV finder later when it passes checks.
 	setControlBaroHeight();
 
-	if(!initialiseTilt()){
+	if (!initialiseTilt()) {
 		return false;
 	}
 
 	// calculate the initial magnetic field and yaw alignment
-	_control_status.flags.yaw_align = resetMagHeading(_mag_lpf.getState(), false, false);
+	// but do not mark the yaw alignement complete as it needs to be
+	// reset once the leveling phase is done
+	resetMagHeading(_mag_lpf.getState(), false, false);
 
 	// initialise the state covariance matrix now we have starting values for all the states
 	initialiseCovariance();
@@ -218,6 +225,7 @@ bool Ekf::initialiseFilter()
 	_time_last_delpos_fuse = _time_last_imu;
 	_time_last_hor_vel_fuse = _time_last_imu;
 	_time_last_hagl_fuse = _time_last_imu;
+	_time_last_flow_terrain_fuse = _time_last_imu;
 	_time_last_of_fuse = _time_last_imu;
 
 	// reset the output predictor state history to match the EKF initial values
@@ -230,8 +238,9 @@ bool Ekf::initialiseTilt()
 {
 	const float accel_norm = _accel_lpf.getState().norm();
 	const float gyro_norm = _gyro_lpf.getState().norm();
-	if (accel_norm < 0.9f * CONSTANTS_ONE_G ||
-	    accel_norm > 1.1f * CONSTANTS_ONE_G ||
+
+	if (accel_norm < 0.8f * CONSTANTS_ONE_G ||
+	    accel_norm > 1.2f * CONSTANTS_ONE_G ||
 	    gyro_norm > math::radians(15.0f)) {
 		return false;
 	}
@@ -241,8 +250,7 @@ bool Ekf::initialiseTilt()
 	const float pitch = asinf(gravity_in_body(0));
 	const float roll = atan2f(-gravity_in_body(1), -gravity_in_body(2));
 
-	const Eulerf euler_init(roll, pitch, 0.0f);
-	_state.quat_nominal = Quatf(euler_init);
+	_state.quat_nominal = Quatf{Eulerf{roll, pitch, 0.0f}};
 	_R_to_earth = Dcmf(_state.quat_nominal);
 
 	return true;
@@ -312,10 +320,9 @@ void Ekf::predictState()
  * “Recursive Attitude Estimation in the Presence of Multi-rate and Multi-delay Vector Measurements”
  * A Khosravian, J Trumpf, R Mahony, T Hamel, Australian National University
 */
-void Ekf::calculateOutputStates()
+void Ekf::calculateOutputStates(const imuSample &imu)
 {
 	// Use full rate IMU data at the current time horizon
-	const imuSample &imu = _newest_high_rate_imu_sample;
 
 	// correct delta angles for bias offsets
 	const float dt_scale_correction = _dt_imu_avg / _dt_ekf_avg;
@@ -395,11 +402,11 @@ void Ekf::calculateOutputStates()
 		// this data will be at the EKF fusion time horizon
 		// TODO: there is no guarantee that data is at delayed fusion horizon
 		//       Shouldnt we use pop_first_older_than?
-		const outputSample output_delayed = _output_buffer.get_oldest();
-		const outputVert output_vert_delayed = _output_vert_buffer.get_oldest();
+		const outputSample &output_delayed = _output_buffer.get_oldest();
+		const outputVert &output_vert_delayed = _output_vert_buffer.get_oldest();
 
 		// calculate the quaternion delta between the INS and EKF quaternions at the EKF fusion time horizon
-		const Quatf q_error( (_state.quat_nominal.inversed() * output_delayed.quat_nominal).normalized() );
+		const Quatf q_error((_state.quat_nominal.inversed() * output_delayed.quat_nominal).normalized());
 
 		// convert the quaternion delta to a delta angle
 		const float scalar = (q_error(0) >= 0.0f) ? -2.f : 2.f;
@@ -503,7 +510,7 @@ void Ekf::applyCorrectionToVerticalOutputBuffer(float vert_vel_correction)
 * The vel and pos state history are corrected individually so they track the EKF states at
 * the fusion time horizon. This option provides the most accurate tracking of EKF states.
 */
-void Ekf::applyCorrectionToOutputBuffer(const Vector3f& vel_correction, const Vector3f& pos_correction)
+void Ekf::applyCorrectionToOutputBuffer(const Vector3f &vel_correction, const Vector3f &pos_correction)
 {
 	// loop through the output filter state history and apply the corrections to the velocity and position states
 	for (uint8_t index = 0; index < _output_buffer.get_length(); index++) {

@@ -59,7 +59,7 @@ public:
 
 protected:
 	SensorRangeFinder _range_finder{};
-	const rangeSample _good_sample{1.f, (uint64_t)2e6, 100}; // {range, time_us, quality}
+	const rangeSample _good_sample{(uint64_t)2e6, 1.f, 100}; // {time_us, range, quality}
 	const float _min_range{0.5f};
 	const float _max_range{10.f};
 
@@ -233,6 +233,19 @@ TEST_F(SensorRangeFinderTest, rangeStuck)
 	// because the sensor is "stuck"
 	EXPECT_FALSE(_range_finder.isDataHealthy());
 	EXPECT_FALSE(_range_finder.isHealthy());
+
+	// BUT WHEN: we continue to send samples but with changing distance
+	for (int i = 0; i < 2; i++) {
+		new_sample.rng += 1.f;
+		_range_finder.setSample(new_sample);
+		_range_finder.runChecks(new_sample.time_us, attitude);
+		new_sample.time_us += dt;
+	}
+
+	// THEN: the data should be marked as healthy
+	// because the sensor is not "stuck" anymore
+	EXPECT_TRUE(_range_finder.isDataHealthy());
+	EXPECT_TRUE(_range_finder.isHealthy());
 }
 
 TEST_F(SensorRangeFinderTest, qualityHysteresis)

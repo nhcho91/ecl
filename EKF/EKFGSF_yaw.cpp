@@ -79,40 +79,23 @@ void EKFGSF_yaw::update(const imuSample& imu_sample,
 			if (!bad_update) {
 				float total_weight = 0.0f;
 				// calculate weighting for each model assuming a normal distribution
+				const float min_weight = 1e-5f;
+				uint8_t n_weight_clips = 0;
 				for (uint8_t model_index = 0; model_index < N_MODELS_EKFGSF; model_index ++) {
-					_model_weights(model_index) = fmaxf(gaussianDensity(model_index) * _model_weights(model_index), 0.0f);
+					_model_weights(model_index) = gaussianDensity(model_index) * _model_weights(model_index);
+					if (_model_weights(model_index) < min_weight) {
+						n_weight_clips++;
+						_model_weights(model_index) = min_weight;
+					}
 					total_weight += _model_weights(model_index);
 				}
 
 				// normalise the weighting function
-				if (total_weight > 1e-15f) {
+				if (n_weight_clips < N_MODELS_EKFGSF) {
 					_model_weights /= total_weight;
-				}
-
-				// Enforce a minimum weighting value. This was added during initial development but has not been needed
-				// subsequently, so this block of code and the corresponding _weight_min can be removed if we get
-				// through testing without any weighting function issues.
-				if (_weight_min > FLT_EPSILON) {
-					float correction_sum = 0.0f; // amount the sum of weights has been increased by application of the limit
-					bool change_mask[N_MODELS_EKFGSF] = {}; // true when the weighting for that model has been increased
-					float unmodified_weights_sum = 0.0f; // sum of unmodified weights
-					for (uint8_t model_index = 0; model_index < N_MODELS_EKFGSF; model_index ++) {
-						if (_model_weights(model_index) < _weight_min) {
-							correction_sum += _weight_min - _model_weights(model_index);
-							_model_weights(model_index) = _weight_min;
-							change_mask[model_index] = true;
-						} else {
-							unmodified_weights_sum += _model_weights(model_index);
-						}
-					}
-
-					// rescale the unmodified weights to make the total sum unity
-					const float scale_factor = (unmodified_weights_sum - correction_sum - _weight_min) / (unmodified_weights_sum - _weight_min);
-					for (uint8_t model_index = 0; model_index < N_MODELS_EKFGSF; model_index ++) {
-						if (!change_mask[model_index]) {
-							_model_weights(model_index) = _weight_min + scale_factor * (_model_weights(model_index) - _weight_min);
-						}
-					}
+				} else {
+					// all weights have collapsed due to excessive innovation variances so reset filters
+					initialiseEKFGSF();
 				}
 			}
 		}
@@ -310,7 +293,7 @@ void EKFGSF_yaw::predictEKF(const uint8_t model_index)
 bool EKFGSF_yaw::updateEKF(const uint8_t model_index)
 {
 	// set observation variance from accuracy estimate supplied by GPS and apply a sanity check minimum
-	const float velObsVar = sq(fmaxf(_vel_accuracy, 0.5f));
+	const float velObsVar = sq(fmaxf(_vel_accuracy, 0.01f));
 
 	// calculate velocity observation innovations
 	_ekf_gsf[model_index].innov(0) = _ekf_gsf[model_index].X(0) - _vel_NE(0);
@@ -461,7 +444,7 @@ float EKFGSF_yaw::gaussianDensity(const uint8_t model_index) const
 	return _m_2pi_inv * sqrtf(_ekf_gsf[model_index].S_det_inverse) * expf(-0.5f * normDist);
 }
 
-bool EKFGSF_yaw::getLogData(float *yaw_composite, float *yaw_variance, float yaw[N_MODELS_EKFGSF], float innov_VN[N_MODELS_EKFGSF], float innov_VE[N_MODELS_EKFGSF], float weight[N_MODELS_EKFGSF])
+bool EKFGSF_yaw::getLogData(float *yaw_composite, float *yaw_variance, float yaw[N_MODELS_EKFGSF], float innov_VN[N_MODELS_EKFGSF], float innov_VE[N_MODELS_EKFGSF], float weight[N_MODELS_EKFGSF]) const
 {
 	if (_ekf_gsf_vel_fuse_started) {
 		*yaw_composite = _gsf_yaw;
@@ -523,7 +506,7 @@ Matrix3f EKFGSF_yaw::ahrsPredictRotMat(const Matrix3f &R, const Vector3f &g)
 	return ret;
 }
 
-bool EKFGSF_yaw::getYawData(float *yaw, float *yaw_variance)
+bool EKFGSF_yaw::getYawData(float *yaw, float *yaw_variance) const
 {
 	if(_ekf_gsf_vel_fuse_started) {
 		*yaw = _gsf_yaw;

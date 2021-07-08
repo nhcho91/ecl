@@ -158,20 +158,11 @@ void Ekf::fuseAirspeed()
 
 	if (is_fused) {
 		_time_last_arsp_fuse = _time_last_imu;
+		_control_status.flags.fuse_aspd = true;
 	}
 }
 
-Vector2f Ekf::getWindVelocity() const
-{
-	return _state.wind_vel;
-}
-
-Vector2f Ekf::getWindVelocityVariance() const
-{
-	return P.slice<2, 2>(22,22).diag();
-}
-
-void Ekf::get_true_airspeed(float *tas)
+void Ekf::get_true_airspeed(float *tas) const
 {
 	const float tempvar = sqrtf(sq(_state.vel(0) - _state.wind_vel(0)) + sq(_state.vel(1) - _state.wind_vel(1)) + sq(_state.vel(2)));
 	memcpy(tas, &tempvar, sizeof(float));
@@ -182,7 +173,9 @@ void Ekf::get_true_airspeed(float *tas)
 */
 void Ekf::resetWindStates()
 {
-	const float euler_yaw = getEuler321Yaw(_state.quat_nominal);
+	const float euler_yaw = shouldUse321RotationSequence(_R_to_earth)
+	                        ? getEuler321Yaw(_state.quat_nominal)
+	                        : getEuler312Yaw(_state.quat_nominal);
 
 	if (_tas_data_ready && (_imu_sample_delayed.time_us - _airspeed_sample_delayed.time_us < (uint64_t)5e5)) {
 		// estimate wind using zero sideslip assumption and airspeed measurement if airspeed available

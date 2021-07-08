@@ -74,9 +74,7 @@ void Ekf::initialiseCovariance()
 		P(9,9) = sq(fmaxf(_params.range_noise, 0.01f));
 
 	} else if (_control_status.flags.gps_hgt) {
-		float lower_limit = fmaxf(_params.gps_pos_noise, 0.01f);
-		float upper_limit = fmaxf(_params.pos_noaid_noise, lower_limit);
-		P(9,9) = sq(1.5f * math::constrain(_gps_sample_delayed.vacc, lower_limit, upper_limit));
+		P(9,9) = getGpsHeightVariance();
 
 	} else {
 		P(9,9) = sq(fmaxf(_params.baro_noise, 0.01f));
@@ -92,25 +90,12 @@ void Ekf::initialiseCovariance()
 	_prev_dvel_bias_var(1) = P(14,14) = P(13,13);
 	_prev_dvel_bias_var(2) = P(15,15) = P(13,13);
 
-	// record IMU bias state covariance reset time - used to prevent resets being performed too often
-	_last_imu_bias_cov_reset_us = _imu_sample_delayed.time_us;
-
 	resetMagCov();
 
 	// wind
 	P(22,22) = sq(_params.initial_wind_uncertainty);
 	P(23,23) = P(22,22);
 
-}
-
-Vector3f Ekf::getPositionVariance() const
-{
-	return P.slice<3,3>(7,7).diag();
-}
-
-Vector3f Ekf::getVelocityVariance() const
-{
-	return P.slice<3,3>(4,4).diag();
 }
 
 void Ekf::predictCovariance()
@@ -160,14 +145,14 @@ void Ekf::predictCovariance()
 
 	const bool do_inhibit_all_axes = (_params.fusion_mode & MASK_INHIBIT_ACC_BIAS)
 					 || is_manoeuvre_level_high
-					 || _bad_vert_accel_detected;
+					 || _fault_status.flags.bad_acc_vertical;
 
 	for (unsigned stateIndex = 13; stateIndex <= 15; stateIndex++) {
 		const unsigned index = stateIndex - 13;
 
 		// When on ground, only consider an accel bias observable if aligned with the gravity vector
 		const bool is_bias_observable = (fabsf(_R_to_earth(2, index)) > 0.8f) || _control_status.flags.in_air;
-		const bool do_inhibit_axis = do_inhibit_all_axes || !is_bias_observable;
+		const bool do_inhibit_axis = do_inhibit_all_axes || !is_bias_observable || _imu_sample_delayed.delta_vel_clipping[index];
 
 		if (do_inhibit_axis) {
 			// store the bias state variances to be reinstated later
@@ -245,7 +230,7 @@ void Ekf::predictCovariance()
 
 	float accel_noise = math::constrain(_params.accel_noise, 0.0f, 1.0f);
 
-	if (_bad_vert_accel_detected) {
+	if (_fault_status.flags.bad_acc_vertical) {
 		// Increase accelerometer process noise if bad accel data is detected. Measurement errors due to
 		// vibration induced clipping commonly reach an equivalent 0.5g offset.
 		accel_noise = BADACC_BIAS_PNOISE;
@@ -255,17 +240,22 @@ void Ekf::predictCovariance()
 	dvxVar = dvyVar = dvzVar = sq(dt * accel_noise);
 
 	// Accelerometer Clipping
+	_fault_status.flags.bad_acc_clipping = false; // reset flag
+
 	// delta velocity X: increase process noise if sample contained any X axis clipping
 	if (_imu_sample_delayed.delta_vel_clipping[0]) {
 		dvxVar = sq(dt * BADACC_BIAS_PNOISE);
+		_fault_status.flags.bad_acc_clipping = true;
 	}
 	// delta velocity Y: increase process noise if sample contained any Y axis clipping
 	if (_imu_sample_delayed.delta_vel_clipping[1]) {
 		dvyVar = sq(dt * BADACC_BIAS_PNOISE);
+		_fault_status.flags.bad_acc_clipping = true;
 	}
 	// delta velocity Z: increase process noise if sample contained any Z axis clipping
 	if (_imu_sample_delayed.delta_vel_clipping[2]) {
 		dvzVar = sq(dt * BADACC_BIAS_PNOISE);
+		_fault_status.flags.bad_acc_clipping = true;
 	}
 
 	// predict the covariance
@@ -586,7 +576,7 @@ void Ekf::predictCovariance()
 		nextP(13,13) = kahanSummation(nextP(13,13), process_noise(13), _delta_vel_bias_var_accum(0));
 
 	} else {
-		nextP.uncorrelateCovarianceSetVariance<1>(13, 0.f);
+		nextP.uncorrelateCovarianceSetVariance<1>(13, _prev_dvel_bias_var(0));
 		_delta_vel_bias_var_accum(0) = 0.f;
 
 	}
@@ -615,7 +605,7 @@ void Ekf::predictCovariance()
 		nextP(14,14) = kahanSummation(nextP(14,14), process_noise(14), _delta_vel_bias_var_accum(1));
 
 	} else {
-		nextP.uncorrelateCovarianceSetVariance<1>(14, 0.f);
+		nextP.uncorrelateCovarianceSetVariance<1>(14, _prev_dvel_bias_var(1));
 		_delta_vel_bias_var_accum(1) = 0.f;
 
 	}
@@ -645,7 +635,7 @@ void Ekf::predictCovariance()
 		nextP(15,15) = kahanSummation(nextP(15,15), process_noise(15), _delta_vel_bias_var_accum(2));
 
 	} else {
-		nextP.uncorrelateCovarianceSetVariance<1>(15, 0.f);
+		nextP.uncorrelateCovarianceSetVariance<1>(15, _prev_dvel_bias_var(2));
 		_delta_vel_bias_var_accum(2) = 0.f;
 
 	}
@@ -890,12 +880,12 @@ void Ekf::fixCovarianceErrors(bool force_symmetry)
 
 	for (int i = 4; i <= 6; i++) {
 		// NED velocity states
-		P(i,i) = math::constrain(P(i,i), 1E-6f, P_lim[1]);
+		P(i,i) = math::constrain(P(i,i), 1e-6f, P_lim[1]);
 	}
 
 	for (int i = 7; i <= 9; i++) {
 		// NED position states
-		P(i,i) = math::constrain(P(i,i), 1E-6f, P_lim[2]);
+		P(i,i) = math::constrain(P(i,i), 1e-6f, P_lim[2]);
 	}
 
 	for (int i = 10; i <= 12; i++) {
@@ -959,7 +949,10 @@ void Ekf::fixCovarianceErrors(bool force_symmetry)
 		bool bad_acc_bias = (fabsf(down_dvel_bias) > dVel_bias_lim
 				     && ( (down_dvel_bias * _gps_vel_innov(2) < 0.0f && _control_status.flags.gps)
 				     ||   (down_dvel_bias * _ev_vel_innov(2) < 0.0f && _control_status.flags.ev_vel) )
-				     && down_dvel_bias * _gps_pos_innov(2) < 0.0f);
+				     && ( (down_dvel_bias * _gps_pos_innov(2) < 0.0f && _control_status.flags.gps_hgt)
+				     ||   (down_dvel_bias * _baro_hgt_innov(2) < 0.0f && _control_status.flags.baro_hgt)
+				     ||   (down_dvel_bias * _rng_hgt_innov(2) < 0.0f && _control_status.flags.rng_hgt)
+				     ||   (down_dvel_bias * _ev_pos_innov(2) < 0.0f && _control_status.flags.ev_hgt) ) );
 
 		// record the pass/fail
 		if (!bad_acc_bias) {
@@ -978,7 +971,8 @@ void Ekf::fixCovarianceErrors(bool force_symmetry)
 
 			_time_acc_bias_check = _time_last_imu;
 			_fault_status.flags.bad_acc_bias = false;
-			ECL_WARN_TIMESTAMPED("invalid accel bias - covariance reset");
+			_warning_events.flags.invalid_accel_bias_cov_reset = true;
+			ECL_WARN("invalid accel bias - covariance reset");
 
 		} else if (force_symmetry) {
 			// ensure the covariance values are symmetrical
@@ -1039,7 +1033,6 @@ bool Ekf::checkAndFixCovarianceUpdate(const SquareMatrix24f& KHP) {
 	return healthy;
 }
 
-
 void Ekf::resetMagRelatedCovariances()
 {
 	resetQuatCov();
@@ -1091,6 +1084,13 @@ void Ekf::zeroMagCov()
 	P.uncorrelateCovarianceSetVariance<3>(19, 0.0f);
 }
 
+void Ekf::resetZDeltaAngBiasCov()
+{
+	const float init_delta_ang_bias_var = sq(_params.switch_on_gyro_bias * _dt_ekf_avg);
+
+	P.uncorrelateCovarianceSetVariance<1>(12, init_delta_ang_bias_var);
+}
+
 void Ekf::resetWindCovariance()
 {
 	if (_tas_data_ready && (_imu_sample_delayed.time_us - _airspeed_sample_delayed.time_us < (uint64_t)5e5)) {
@@ -1124,6 +1124,5 @@ void Ekf::resetWindCovariance()
 	} else {
 		// without airspeed, start with a small initial uncertainty to improve the initial estimate
 		P.uncorrelateCovarianceSetVariance<2>(22, _params.initial_wind_uncertainty);
-
 	}
 }

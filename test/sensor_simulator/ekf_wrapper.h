@@ -71,6 +71,7 @@ public:
 	void enableFlowFusion();
 	void disableFlowFusion();
 	bool isIntendingFlowFusion() const;
+	void setFlowOffset(const matrix::Vector3f &offset);
 
 	void enableExternalVisionPositionFusion();
 	void disableExternalVisionPositionFusion();
@@ -86,6 +87,7 @@ public:
 
 	bool isIntendingMagHeadingFusion() const;
 	bool isIntendingMag3DFusion() const;
+	void setMagFuseTypeNone();
 
 	void enableExternalVisionAlignment();
 	void disableExternalVisionAlignment();
